@@ -30,15 +30,9 @@ from twisted.python import log
 
 from packets import Packets
 
-class HelbreathProtocol(StatefulProtocol):
-	def __init__(self, config):
-		''' Worlds configuration file passed from the factory '''
-		self.config = config
-		
-	def connectionMade(self):
-		''' Partial protocol data '''
-		self.key = self.data_size = None
-		
+class BaseHelbreathProtocol(StatefulProtocol):
+	''' Basic Helbreath Protocol '''
+	
 	def getInitialState(self):
 		'''
 			Protocol overview:
@@ -65,7 +59,50 @@ class HelbreathProtocol(StatefulProtocol):
 				data[i] = chr(((ord(data[i]) ^ (self.key ^ (self.data_size - 3 - i))) - (i ^ self.key)) % 256)
 			data = ''.join(data)
 		
-		# Get the main header
+		# Pass decoded data
+		self.raw_data(data)
+		
+		return (self.get_key, 1)
+	
+	def send_message(self, data):
+		''' Send a Helbreath Packet data '''
+		key = random.randint(0, 255)
+		if key > 0:
+			# Encode
+			data = list(data)
+			for i in range(len(data)):
+				data[i] = chr(((ord(data[i]) + (i ^ key)) ^ (key ^ (len(data) - i))) % 256)
+			data = ''.join(data)
+		self.transport.write(struct.pack('<BH', key, len(data) + 3) + data)
+
+	def raw_data(self, data):
+		''' Got packet '''
+		pass
+		
+class ProxyHelbreathProtocol(BaseHelbreathProtocol):
+	''' Proxy Helbreath protocol used for proxying packets '''
+	def connectionMade(self):
+		self.factory.success(self)
+		
+	def login(self, account_name, account_password, world_name):
+		''' Request a login '''
+		
+		# Casting to str is made for sure
+		# world_name could be either str or unicode.
+		self.send_message(struct.pack('<IH10s10s30s',
+			Packets.MSGID_REQUEST_LOGIN, # MsgID
+			0, # MsgType
+			str(account_name),
+			str(account_password),
+			str(world_name)))
+			
+	def raw_data(self, data):
+		self.factory.receiver(data)
+		self.transport.abortConnection()
+		
+class HelbreathProtocol(BaseHelbreathProtocol):
+	def raw_data(self, data):
+		# Header
 		msg_id, msg_type = struct.unpack('<IH', data[:6])
 		
 		# Process packet data
@@ -81,25 +118,16 @@ class HelbreathProtocol(StatefulProtocol):
 				account_password.rstrip('\x00'),
 				world_name.rstrip('\x00')
 			)
+		else:
+			# Abort if a packet is not (yet) known
+			self.abortConnection()
 			
-		return (self.get_key, 1)
-	
-	def send_message(self, data):
-		''' Send a Helbreath Packet data '''
-		key = random.randint(0, 255)
-		if key > 0:
-			# Encode
-			data = list(data)
-			for i in range(len(data)):
-				data[i] = chr(((ord(data[i]) + (i ^ key)) ^ (key ^ (len(data) - i))) % 256)
-			data = ''.join(data)
-		self.transport.write(struct.pack('<BH', key, len(data) + 3) + data)
-		
 	def request_login(self, account_name, account_password, world_name):
 		''' Request client login
 		
 		account_name -- Account name
 		account_password -- Account password
+		world_name -- World server name
 		'''
 		
 		def world_is_down(failure = None):
@@ -107,15 +135,27 @@ class HelbreathProtocol(StatefulProtocol):
 			self.send_message(struct.pack('<IH',
 				 Packets.MSGID_RESPONSE_LOG,
 				 Packets.DEF_LOGRESMSGTYPE_NOTEXISTINGWORLDSERVER))
-				
-		if world_name not in self.config:
-			''' World is not found in the configuration '''
-			log.msg('World not found')
-			world_is_down()
-			# Gracefully disconnect a person.
 			reactor.callLater(10, self.transport.abortConnection)
-			return
+		
+		def handle_response(data):
+			''' Pass data and close the connection nicely '''
+			self.send_message(data)
+			reactor.callLater(10, self.transport.abortConnection)
+		
+		def connection_made(remote):
+			''' Connection is made. Request a login. '''
+			log.msg('Remote connection made!')
+			remote.login(
+				account_name,
+				account_password,
+				remote.factory.world_name
+			)
 			
-		log.msg('Request login %s %s' % (account_name, account_password))
-		log.msg('WS: "%r"' % (world_name, ))
-		log.msg('Found: %d' % (world_name in self.config, ))
+		# Request connection to a world by its name, pass some callbacks
+		self.factory.connect_to_world(
+			world_name = world_name,
+			receiver = handle_response,
+			success = connection_made,
+			failure = world_is_down)
+		
+		log.msg('Request world %s' % (world_name, ))

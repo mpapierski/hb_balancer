@@ -21,11 +21,12 @@
 #
 
 import json
+import random
 
-from twisted.internet import protocol
+from twisted.internet import protocol, reactor
 from twisted.python import log
 
-from protocol import HelbreathProtocol
+from protocol import HelbreathProtocol, ProxyHelbreathProtocol
 
 class ServerFactory(protocol.Factory):
 	''' Main server factory '''
@@ -41,4 +42,54 @@ class ServerFactory(protocol.Factory):
 			log.err('Configuration file hb_balancer.cfg not found!')
 		
 	def buildProtocol(self, addr):
-		return HelbreathProtocol(self.config)
+		p = HelbreathProtocol()
+		p.factory = self
+		return p
+
+	def connect_to_world(self, world_name, success, failure, receiver):
+		''' Select a destination server and make a connection '''
+		try:
+			world = self.config[world_name]
+		except KeyError:
+			# World is not found in the configuration
+			log.err('World %s is not found in the configuration!' % (world_name, ))
+			failure()
+			return
+		
+		if isinstance(world, (list, tuple)):
+			world = random.choice(world)
+		
+		# Start the new connection
+		proxy = ProxyHelbreathFactory(
+			world_name = world['world'],
+			success = success,
+			failure = failure,
+			receiver = receiver
+		)
+		
+		reactor.connectTCP(world['address'], world['port'], proxy, timeout = 5)
+		
+class ProxyHelbreathFactory(protocol.ClientFactory):
+	''' Factory for remote server connections '''
+	
+	def __init__(self, world_name, success, failure, receiver):
+		''' Create proxy factory with callbacks
+		
+		world_name -- Dictionary with world info
+		success -- Connection is made
+		failure -- Connection failed.
+		receiver -- Is bound to a HB protocol, it is the raw packet	receiver
+		'''
+		self.success, self.failure, self.receiver = (
+			success, failure, receiver)
+		
+		self.world_name = world_name
+		
+	def clientConnectionFailed(self, connector, reason):
+		log.msg('Remote connection failed: %s' % (reason.getErrorMessage(), ))
+		self.failure()
+		
+	def buildProtocol(self, addr):
+		p = ProxyHelbreathProtocol()
+		p.factory = self
+		return p
