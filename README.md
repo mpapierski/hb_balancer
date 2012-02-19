@@ -14,7 +14,29 @@ to shut down to make changes work.
 
 ## Installing
 
-TODO
+Create file hb_balancer.cfg with example configuration:
+
+	{
+		"WS1": [
+			{
+				"world": "WS1", 
+				"port": 2849, 
+				"address": "localhost"
+				
+			}
+		], 
+		"WS2": [
+			{
+				"world": "WS1",
+				"port": 2850,
+				"address": "localhost"
+			}
+		]
+	}
+
+Note that each configured World could be single dictionary with connection
+data. If world is configured with a list of servers, then random one will
+be selected.
 
 ## Writing
 
