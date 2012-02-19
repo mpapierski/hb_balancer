@@ -98,7 +98,7 @@ class ProxyHelbreathProtocol(BaseHelbreathProtocol):
 			
 	def raw_data(self, data):
 		self.factory.receiver(data)
-		self.transport.abortConnection()
+		self.transport.loseConnection()
 		
 class HelbreathProtocol(BaseHelbreathProtocol):
 	def raw_data(self, data):
@@ -107,6 +107,7 @@ class HelbreathProtocol(BaseHelbreathProtocol):
 		
 		# Process packet data
 		if msg_id == Packets.MSGID_REQUEST_LOGIN:
+			# Client is requesting login
 			packet_format = '<10s10s30s'
 			account_name, account_password, world_name = struct.unpack(
 				packet_format,
@@ -118,9 +119,27 @@ class HelbreathProtocol(BaseHelbreathProtocol):
 				account_password.rstrip('\x00'),
 				world_name.rstrip('\x00')
 			)
+		elif msg_id == Packets.MSGID_REQUEST_ENTERGAME:
+			# Client is trying to enter game
+			packet_format = '<10s10s10s10si30s120s'
+			player_name, map_name, account_name, account_password, \
+				level, world_name, cmd_line = struct.unpack(
+					packet_format,
+					data[6:])
+					
+			self.request_entergame(
+				msg_type,
+				player_name.rstrip('\x00'),
+				map_name.rstrip('\x00'),
+				account_name.rstrip('\x00'),
+				account_password.rstrip('\x00'),
+				level,
+				world_name.rstrip('\x00'),
+				cmd_line.rstrip('\x00'))
+			
 		else:
 			# Abort if a packet is not (yet) known
-			self.abortConnection()
+			self.transport.loseConnection()
 			
 	def request_login(self, account_name, account_password, world_name):
 		''' Request client login
@@ -135,12 +154,12 @@ class HelbreathProtocol(BaseHelbreathProtocol):
 			self.send_message(struct.pack('<IH',
 				 Packets.MSGID_RESPONSE_LOG,
 				 Packets.DEF_LOGRESMSGTYPE_NOTEXISTINGWORLDSERVER))
-			reactor.callLater(10, self.transport.abortConnection)
+			reactor.callLater(10, self.transport.loseConnection)
 		
 		def handle_response(data):
 			''' Pass data and close the connection nicely '''
 			self.send_message(data)
-			reactor.callLater(10, self.transport.abortConnection)
+			reactor.callLater(10, self.transport.loseConnection)
 		
 		def connection_made(remote):
 			''' Connection is made. Request a login. '''
@@ -159,3 +178,46 @@ class HelbreathProtocol(BaseHelbreathProtocol):
 			failure = world_is_down)
 		
 		log.msg('Request world %s' % (world_name, ))
+
+	def request_entergame(self, msg_type, player_name, map_name, account_name,
+		account_password, level, world_name, cmd_line):
+		''' Client wants to enter game. '''
+		log.msg('Request entergame player(%s) map(%s) account(%s) world(%s)' % (
+			player_name, map_name, account_name, world_name))
+			
+		def connection_made(remote):
+			''' Request enter game, construct exacly the same data.
+			TODO: Parse the msg_type. '''
+			log.msg('Requesting enter game...')
+			remote.send_message(struct.pack('<IH10s10s10s10si30s120s',
+				Packets.MSGID_REQUEST_ENTERGAME,
+				msg_type,
+				player_name,
+				map_name,
+				account_name,
+				account_password,
+				level,
+				str(remote.factory.world_name),
+				cmd_line))
+				
+		def error_handler(failure = None):
+			''' Unable to connect to destination world '''
+			log.err('Enter game error for account(%s) at world(%s)' % (
+				account_name,
+				world_name))
+			self.send_message(struct.pack('<IHB',
+				Packets.MSGID_RESPONSE_ENTERGAME,
+				Packets.DEF_ENTERGAMERESTYPE_REJECT,
+				Packets.DEF_REJECTTYPE_DATADIFFERENCE))
+			reactor.callLater(10, self.transport.loseConnection)
+			
+		def response_handler(data):
+			''' Pass the (modified) data '''
+			self.send_message(data)
+			
+		self.factory.connect_to_world(
+			world_name = world_name,
+			receiver = response_handler,
+			success = connection_made,
+			failure = error_handler
+		)

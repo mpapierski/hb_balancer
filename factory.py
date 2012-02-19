@@ -23,7 +23,7 @@
 import json
 import random
 
-from twisted.internet import protocol, reactor
+from twisted.internet import protocol, reactor, error
 from twisted.python import log
 
 from protocol import HelbreathProtocol, ProxyHelbreathProtocol
@@ -85,8 +85,14 @@ class ProxyHelbreathFactory(protocol.ClientFactory):
 		
 		self.world_name = world_name
 		
+	def clientConnectionLost(self, connector, reason):
+		if reason.check(error.ConnectionDone) == error.ConnectionDone:
+			return
+		log.err('Remote connection lost because of "%s"' % (reason.getErrorMessage(), ))
+		self.failure()
+		
 	def clientConnectionFailed(self, connector, reason):
-		log.msg('Remote connection failed: %s' % (reason.getErrorMessage(), ))
+		log.err('Remote connection failed: %s' % (reason.getErrorMessage(), ))
 		self.failure()
 		
 	def buildProtocol(self, addr):
